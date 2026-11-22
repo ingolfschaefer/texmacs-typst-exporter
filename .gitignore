@@ -1,0 +1,16 @@
+# Private test documents (must not be published)
+private-tests/
+
+# Generated test outputs and extracted media
+tests/out/
+
+# Local IDE / agent configuration
+.antigravity/
+
+# Editor & OS artifacts
+*~
+*.swp
+*.swo
+*.bak
+.DS_Store
+Thumbs.db
