@@ -26,12 +26,14 @@
 (define tmtypst-user-vars (make-ahash-table))
 (define tmtypst-is-book? #f)
 (define tmtypst-last-heading-level 0)
+(define tmtypst-current-image-alt #f)
 
 (define (tmtypst-init-state!)
   (set! tmtypst-image-serial 0)
   (set! tmtypst-user-vars (make-ahash-table))
   (set! tmtypst-is-book? #f)
   (set! tmtypst-last-heading-level 0)
+  (set! tmtypst-current-image-alt #f)
   (let* ((suffix (url-suffix current-save-target))
          (n (+ (string-length suffix) 1)))
     (if (in? suffix '("typ"))
@@ -51,12 +53,26 @@
          (name-string (string-append tmtypst-image-root-string postfix)))
     (values name-url name-string)))
 
-;; Sucht rekursiv nach einem eingebetteten <alt-image-wrap|img|alt> oder <alt-image|src|alt>
+;; Sucht in einer <with>-Paarliste nach dem Wert eines Schlüssels (z. B. "image-alt")
+(define (tmtypst-extract-with-var pairs key)
+  (let loop ((p pairs) (res #f))
+    (if (or (null? p) (null? (cdr p)))
+        res
+        (loop (cddr p)
+              (if (== (car p) key) (cadr p) res)))))
+
+;; Sucht rekursiv nach einem eingebetteten <alt-image-wrap|img|alt>, <alt-image|src|alt>
+;; oder nativem TeXmacs <with|image-alt|alt|...>
 (define (tmtypst-find-alt-text t)
   (cond
     ((not (pair? t)) #f)
     ((and (in? (car t) '(alt-image-wrap alt-image)) (>= (length t) 3))
      (tmtypst-plain-text (caddr t)))
+    ((and (== (car t) 'with) (>= (length t) 4))
+     (let ((val (tmtypst-extract-with-var (cDr (cdr t)) "image-alt")))
+       (if val
+           (tmtypst-plain-text val)
+           (tmtypst-find-alt-text (cAr (cdr t))))))
     (else
      (let loop ((items (cdr t)))
        (if (null? items)
@@ -533,8 +549,17 @@
       (if (= (length args) 1)
           (tmtypst-serialize (car args))
           (let* ((body (cAr args))
-                 (pairs (cDr args)))
-            (let loop ((p pairs) (content (tmtypst-serialize body)))
+                 (pairs (cDr args))
+                 (alt-val (tmtypst-extract-with-var pairs "image-alt"))
+                 (prev-alt tmtypst-current-image-alt)
+                 (body-content
+                  (begin
+                    (when alt-val
+                      (set! tmtypst-current-image-alt (tmtypst-plain-text alt-val)))
+                    (let ((res (tmtypst-serialize body)))
+                      (set! tmtypst-current-image-alt prev-alt)
+                      res))))
+            (let loop ((p pairs) (content body-content))
               (if (or (null? p) (null? (cdr p)))
                   content
                   (let ((k (car p))
@@ -740,6 +765,19 @@
                 header-str
                 body-str "\n)")))))))
 
+;; Prüft, ob ein Figure-Body ein einzelner Bild-/Tabellen-/Plot-Knoten ist (auch in <with|...>)
+(define (tmtypst-single-figure-node? node)
+  (and (pair? node)
+       (cond
+         ((== (car node) 'with)
+          (and (>= (length node) 2)
+               (tmtypst-single-figure-node? (cAr (cdr node)))))
+         (else
+          (in? (car node)
+               '(image alt-image alt-image-wrap decorative-image decorative-image-wrap
+                 tabular tabular* wide-tabular block block* wide-block tformat table
+                 graphics draw-over draw-under plot-output))))))
+
 ;; Abbildung oder Tabelle mit Caption (<big-figure>, <small-figure>, <big-table>, <small-table>)
 (define (tmtypst-serialize-figure body-arg caption-arg is-table?)
   (let* ((cap-res (tmtypst-strip-labels caption-arg))
@@ -758,12 +796,7 @@
                     (inner (if (in? (car clean-body) '(tformat table)) clean-body (cadr clean-body))))
                 (tmtypst-serialize-table inner bordered? #t))
               (tmtypst-serialize clean-body)))
-         (single-code-node?
-          (and (pair? clean-body)
-               (in? (car clean-body)
-                    '(image alt-image alt-image-wrap decorative-image decorative-image-wrap
-                      tabular tabular* wide-tabular block block* wide-block tformat table
-                      graphics draw-over draw-under plot-output))))
+         (single-code-node? (tmtypst-single-figure-node? clean-body))
          (body-expr
           (cond
             ((and single-code-node?
@@ -979,13 +1012,15 @@
                  (dims (tmtypst-image-dim-args w-raw h-raw)))
             (string-append "#pdf.artifact(image(\"" (escape-typst-string src) "\"" dims "))")))
 
-         ;; Standard-Bild ohne expliziten Alt-Text
+         ;; Standard-Bild (nutzt ggf. natives TeXmacs <with|image-alt|...|...>)
          ((image)
           (let* ((src (tmtypst-resolve-image-src (car args)))
                  (w-raw (if (>= (length args) 2) (tmtypst-plain-text (cadr args)) #f))
                  (h-raw (if (>= (length args) 3) (tmtypst-plain-text (caddr args)) #f))
                  (dims (tmtypst-image-dim-args w-raw h-raw)))
-            (string-append "/* WARNUNG: Bild ohne Alt-Text */ #image(\"" (escape-typst-string src) "\"" dims ")")))
+            (if (and (string? tmtypst-current-image-alt) (!= tmtypst-current-image-alt ""))
+                (string-append "#image(\"" (escape-typst-string src) "\", alt: \"" (escape-typst-string tmtypst-current-image-alt) "\"" dims ")")
+                (string-append "/* WARNUNG: Bild ohne Alt-Text */ #image(\"" (escape-typst-string src) "\"" dims ")"))))
 
          ;; Mathematik (Inline & Display)
          ((math) (tmtypst-inline-math (car args)))
@@ -1012,9 +1047,13 @@
 
          ;; Vektorgrafiken & Plots (als PNG-Snippet gerendert)
          ((graphics draw-over draw-under)
-          (tmtypst-render-snippet-png t "TeXmacs Grafik"))
+          (tmtypst-render-snippet-png t (or (and (string? tmtypst-current-image-alt) (!= tmtypst-current-image-alt "") tmtypst-current-image-alt)
+                                            (tmtypst-find-alt-text t)
+                                            "TeXmacs Grafik")))
          ((plot-output)
-          (tmtypst-render-snippet-png t (or (tmtypst-find-alt-text t) "Mathematischer Funktionsplot")))
+          (tmtypst-render-snippet-png t (or (and (string? tmtypst-current-image-alt) (!= tmtypst-current-image-alt "") tmtypst-current-image-alt)
+                                            (tmtypst-find-alt-text t)
+                                            "Mathematischer Funktionsplot")))
 
          ;; Sonderzeichen, Einrückung & verirrte Mathe-Tags im Textmodus
          ((degreesign) "°")

@@ -40,6 +40,13 @@
 
   <alt-image-wrap|<image|../fixtures/diagram.svg|0.5par|||>|Kompakte
   Darstellung der TeXmacs-Typst-PDF/UA-Pipeline>
+
+  Und ein Bild mit dem nativen TeXmacs-Alt-Text-Attribut
+  <verbatim|image-alt>:
+
+  <big-figure|<with|image-alt|Natives TeXmacs image-alt Flussdiagramm der
+  Export-Pipeline|<image|../fixtures/diagram.svg|0.5par|||>>|Abbildung mit
+  nativem <verbatim|image-alt>>
 </body>
 
 <\initial>
